@@ -17,8 +17,6 @@ eeg_spatial/
   searchlight.py  per-electrode-neighborhood classical classifiers
   cnn.py          optional 1D-CNN searchlight on raw EEG (needs torch)
   plotting.py     accuracy topomaps
-data/
-  zuco_montage.npz   105 channel labels + 3D coords (bundled, no Drive needed)
 notebooks/
   Run_ZuCo_Spatial.ipynb   thin Colab driver (clones this repo, runs the pipeline)
 fix_sentiment_labels.py     one-off cleaner for the raw sentiment-label CSV
@@ -26,12 +24,13 @@ fix_sentiment_labels.py     one-off cleaner for the raw sentiment-label CSV
 
 ## Data (kept on Google Drive, not in this repo)
 
+All data stays on the user's Google Drive; the notebook's `Config` points at it. None of
+it is committed here.
+
 - `results*_SR.mat` — 12 subject files, ZuCo 1.0 Task1-SR (MATLAB v5 / scipy format).
 - Fixed sentiment-label CSV — produced by `fix_sentiment_labels.py`
   (sentiment_label in {-1, 0, 1}).
-
-The electrode montage **is** bundled here (`data/zuco_montage.npz`), so the notebook only
-needs Drive for the `.mat` files and the label CSV.
+- `zuco_montage.npz` — 105 channel labels + 3D coords (extracted from the ZuCo chanlocs).
 
 ## Colab usage
 

@@ -8,8 +8,9 @@ __pycache__/
 .DS_Store
 .claude/
 
-# Root duplicate of the montage; the canonical copy lives in data/
-/zuco_montage.npz
+# Data lives on the user's Google Drive, not in this repo
+*.npz
+zuco_sentiment_labels_task1*.csv
 
 # Large / exploratory notebooks kept locally, not part of the pipeline
 Experiment-ZuCo&TeCo.ipynb
