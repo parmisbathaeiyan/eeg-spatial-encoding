@@ -8,9 +8,10 @@ __pycache__/
 .DS_Store
 .claude/
 
-# Data lives on the user's Google Drive, not in this repo
+# Data + offline data-prep live on the user's Google Drive, not in this repo
 *.npz
 zuco_sentiment_labels_task1*.csv
+fix_sentiment_labels.py
 
 # Large / exploratory notebooks kept locally, not part of the pipeline
 Experiment-ZuCo&TeCo.ipynb
