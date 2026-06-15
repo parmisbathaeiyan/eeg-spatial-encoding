@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+.claude/
+
+# Root duplicate of the montage; the canonical copy lives in data/
+/zuco_montage.npz
+
+# Large / exploratory notebooks kept locally, not part of the pipeline
+Experiment-ZuCo&TeCo.ipynb
+Interpolate_both_datasets.ipynb
+Thesis-Data structures-ZuCo.ipynb
+ZuCo_Task1_Spatial_Accuracy_output.ipynb
+ZuCo_Task1_Spatial_Sentiment_Classification.ipynb
