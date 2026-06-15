@@ -13,6 +13,10 @@ __pycache__/
 zuco_sentiment_labels_task1*.csv
 fix_sentiment_labels.py
 
+# Stray local result/plot artifacts (results are saved to Drive, not versioned)
+spatial_accuracy_results*.csv
+*.png
+
 # Large / exploratory notebooks kept locally, not part of the pipeline
 Experiment-ZuCo&TeCo.ipynb
 Interpolate_both_datasets.ipynb
