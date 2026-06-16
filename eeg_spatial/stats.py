@@ -1,28 +1,22 @@
 """Cluster-based permutation test for the spatial searchlight (significance over space).
 
-Leakage-free by construction: cross-validation holds out whole *sentences* (GroupKFold by
-sentence, so all 12 subjects' copies of a held-out sentence are in the test fold), and the
-null is built by permuting sentiment labels *at the sentence level* (each unique sentence
-gets one shuffled label, propagated to its copies). Multiple comparisons across the 105
+Leakage-free by construction: CV holds out whole *sentences* (grouped folds, so all 12
+subjects' copies of a held-out sentence are in the test fold), and the null is built by
+permuting sentiment labels *at the sentence level*. Multiple comparisons across the 105
 electrodes are handled with a spatial cluster test (Maris & Oostenveld, 2007) on the
 electrode neighbor graph.
 
-Kept separate from `searchlight.py` on purpose - it uses fixed CV folds, a single fast
-classifier (LDA), and joblib parallelism, and importing it changes nothing about the
-existing pipeline.
+Reuses the shared searchlight core from `searchlight.py` (no duplicated CV loop).
 """
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.colors import TwoSlopeNorm
 import mne
 
-from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import make_pipeline
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from sklearn.model_selection import GroupKFold
 from joblib import Parallel, delayed
 
-CHANCE_3CLASS = 1.0 / 3.0
+from .searchlight import CHANCE_3CLASS, make_cv_splits, searchlight_accuracy
 
 
 # ----------------------------------------------------------------------------- graph helpers
@@ -40,7 +34,7 @@ def _adjacency(neighbor_idx):
 
 
 def _components(mask, adj):
-    """Connected components (as lists of electrode indices) among electrodes where mask is True."""
+    """Connected components (lists of electrode indices) among electrodes where mask is True."""
     seen, comps = set(), []
     for start in np.where(mask)[0]:
         if start in seen:
@@ -59,24 +53,9 @@ def _components(mask, adj):
     return comps
 
 
-# ----------------------------------------------------------------------------- searchlight core
-def _searchlight_acc(X, y, neighbor_idx, make_clf, splits):
-    """Mean CV accuracy per electrode neighborhood for a single classifier and fixed folds."""
-    n_ch = X.shape[1]
-    acc = np.zeros(n_ch)
-    for ch in range(n_ch):
-        X_ch = X[:, neighbor_idx[ch], :].reshape(X.shape[0], -1)
-        fold = []
-        for tr, te in splits:
-            pipe = make_pipeline(StandardScaler(), make_clf())
-            pipe.fit(X_ch[tr], y[tr])
-            fold.append(pipe.score(X_ch[te], y[te]))
-        acc[ch] = np.mean(fold)
-    return acc
-
-
 def _permute_group_labels(y, groups, rng):
     """Shuffle labels across groups (sentences), keeping each group's copies on one label."""
+    y = np.asarray(y)
     uniq, first = np.unique(groups, return_index=True)
     glabels = y[first]                       # one label per unique sentence
     mapping = dict(zip(uniq, glabels[rng.permutation(len(glabels))]))
@@ -91,41 +70,36 @@ def permutation_cluster_searchlight(X, y, neighbor_idx, groups, n_permutations=2
 
     Parameters
     ----------
-    X : (N, n_channels, n_features)        feature tensor (e.g. X_band)
-    y : (N,)                                labels in {-1, 0, 1}
-    neighbor_idx : (n_channels, K+1)        electrode neighbor index (defines adjacency)
-    groups : (N,)                           sentence id per trial (e.g. meta['texts']) - the CV
-                                            grouping AND the permutation unit
-    n_permutations : int                    number of label shuffles for the null
-    cluster_alpha : float                   per-electrode cluster-forming threshold (one-sided)
-    make_clf : callable                     estimator factory; defaults to LDA (fast)
-    n_jobs : int                            joblib parallelism (-1 = all cores)
+    X : (N, n_channels, n_features)   feature tensor (e.g. X_band)
+    y : (N,)                           labels in {-1, 0, 1}
+    neighbor_idx : (n_channels, K+1)   electrode neighbor index (defines spatial adjacency)
+    groups : (N,)                      sentence id per trial (e.g. meta['texts']) - both the
+                                       CV grouping and the permutation unit
+    n_permutations, n_folds, cluster_alpha, random_state, make_clf, n_jobs : see below.
 
-    Returns
-    -------
-    dict with: accuracy (n_channels,), p_per_electrode (uncorrected), threshold (per-electrode),
-    clusters (list of index lists), cluster_pvalues, sig_mask (bool, cluster-corrected),
-    null_max_mass, n_permutations.
+    Returns a dict: accuracy, p_per_electrode (uncorrected), threshold (per-electrode),
+    clusters (list of index lists), cluster_pvalues, sig_mask (cluster-corrected), null_max_mass.
     """
     if make_clf is None:
         make_clf = lambda: LinearDiscriminantAnalysis()
     groups = np.asarray(groups)
 
-    # fixed folds: hold out whole sentences (no leakage), reused across all permutations so the
-    # null differs from the observed only in the label assignment
-    splits = list(GroupKFold(n_splits=n_folds).split(np.zeros(len(y)), y, groups))
+    # fixed grouped folds (leakage-free); built once from the real labels and reused for the
+    # observed map and every permutation, so only the labels change across permutations.
+    splits = make_cv_splits(y, groups=groups, n_folds=n_folds, random_state=random_state)
     adj = _adjacency(neighbor_idx)
 
     if verbose:
-        print(f"observed searchlight (GroupKFold by sentence, {n_folds} folds)...")
-    observed = _searchlight_acc(X, y, neighbor_idx, make_clf, splits)
+        print(f"observed searchlight (grouped {n_folds}-fold by sentence)...")
+    observed = searchlight_accuracy(X, y, neighbor_idx, make_clf, splits)
 
     if verbose:
         print(f"running {n_permutations} sentence-level label permutations (n_jobs={n_jobs})...")
 
     def _one(seed):
         rng = np.random.default_rng(seed)
-        return _searchlight_acc(X, _permute_group_labels(y, groups, rng), neighbor_idx, make_clf, splits)
+        yp = _permute_group_labels(y, groups, rng)
+        return searchlight_accuracy(X, yp, neighbor_idx, make_clf, splits)
 
     null = np.asarray(Parallel(n_jobs=n_jobs)(
         delayed(_one)(random_state + 1 + i) for i in range(n_permutations)))  # (P, n_ch)
@@ -153,14 +127,12 @@ def permutation_cluster_searchlight(X, y, neighbor_idx, groups, n_permutations=2
             sig_mask[c] = True
 
     if verbose:
-        chance = CHANCE_3CLASS
-        print(f"\nchance={chance:.3f} | best electrode acc={observed.max():.3f}")
-        print(f"{len(obs_clusters)} candidate cluster(s); "
-              f"{int((np.array(cluster_p) < cluster_alpha).sum()) if cluster_p else 0} significant "
-              f"at cluster_alpha={cluster_alpha}")
+        n_sig = int((np.array(cluster_p) < cluster_alpha).sum()) if cluster_p else 0
+        print(f"\nchance={CHANCE_3CLASS:.3f} | best electrode acc={observed.max():.3f}")
+        print(f"{len(obs_clusters)} candidate cluster(s); {n_sig} significant at "
+              f"cluster_alpha={cluster_alpha}")
         for c, p, m in sorted(zip(obs_clusters, cluster_p, obs_mass), key=lambda t: t[1]):
-            print(f"  cluster size={len(c):2d}  mass={m:.3f}  p={p:.3f}"
-                  + ("  *" if p < cluster_alpha else ""))
+            print(f"  cluster size={len(c):2d}  mass={m:.3f}  p={p:.3f}" + ("  *" if p < cluster_alpha else ""))
 
     return dict(accuracy=observed, p_per_electrode=p_elec, threshold=thr,
                 clusters=obs_clusters, cluster_pvalues=cluster_p, sig_mask=sig_mask,
@@ -168,7 +140,7 @@ def permutation_cluster_searchlight(X, y, neighbor_idx, groups, n_permutations=2
 
 
 def plot_significance_topomap(result, info, title="cluster-corrected significance"):
-    """Topomap of accuracy with cluster-significant electrodes highlighted (white = chance)."""
+    """Topomap of accuracy with cluster-significant electrodes ringed (white = chance)."""
     acc, mask = result["accuracy"], result["sig_mask"]
     vmin = min(acc.min(), CHANCE_3CLASS - 1e-3)
     vmax = max(acc.max(), CHANCE_3CLASS + 1e-3)
