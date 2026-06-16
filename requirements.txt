@@ -2,6 +2,7 @@ numpy
 scipy
 pandas
 scikit-learn
+joblib
 matplotlib
 mne
 torch
