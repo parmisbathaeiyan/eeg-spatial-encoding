@@ -6,7 +6,9 @@ permuting sentiment labels *at the sentence level*. Multiple comparisons across 
 electrodes are handled with a spatial cluster test (Maris & Oostenveld, 2007) on the
 electrode neighbor graph.
 
-Reuses the shared searchlight core from `searchlight.py` (no duplicated CV loop).
+Reuses the shared searchlight core from `searchlight.py`. The pieces are factored so a long
+permutation run can be done in resumable chunks: `permute_null` runs a batch of permutations,
+and `cluster_test` computes the corrected result from an accumulated null of any size.
 """
 import numpy as np
 import matplotlib.pyplot as plt
@@ -62,81 +64,106 @@ def _permute_group_labels(y, groups, rng):
     return np.array([mapping[g] for g in groups])
 
 
-# ----------------------------------------------------------------------------- main entry point
-def permutation_cluster_searchlight(X, y, neighbor_idx, groups, n_permutations=200,
-                                    n_folds=5, cluster_alpha=0.05, random_state=42,
-                                    make_clf=None, n_jobs=-1, verbose=True):
-    """Significance-over-space via a sentence-level permutation + spatial cluster test.
+def default_clf():
+    """Fast classifier for the permutation test."""
+    return LinearDiscriminantAnalysis()
 
-    Parameters
-    ----------
-    X : (N, n_channels, n_features)   feature tensor (e.g. X_band)
-    y : (N,)                           labels in {-1, 0, 1}
-    neighbor_idx : (n_channels, K+1)   electrode neighbor index (defines spatial adjacency)
-    groups : (N,)                      sentence id per trial (e.g. meta['texts']) - both the
-                                       CV grouping and the permutation unit
-    n_permutations, n_folds, cluster_alpha, random_state, make_clf, n_jobs : see below.
 
-    Returns a dict: accuracy, p_per_electrode (uncorrected), threshold (per-electrode),
-    clusters (list of index lists), cluster_pvalues, sig_mask (cluster-corrected), null_max_mass.
+# ----------------------------------------------------------------------------- building blocks
+def permute_null(X, y, neighbor_idx, groups, splits, make_clf, seeds, n_jobs=-1):
+    """Searchlight accuracy maps under sentence-level label permutation.
+
+    One map per integer in `seeds` (the seed makes each permutation reproducible). Returns
+    an array of shape (len(seeds), n_channels). Use distinct seeds across chunks to keep
+    accumulated permutations independent.
     """
-    if make_clf is None:
-        make_clf = lambda: LinearDiscriminantAnalysis()
     groups = np.asarray(groups)
 
-    # fixed grouped folds (leakage-free); built once from the real labels and reused for the
-    # observed map and every permutation, so only the labels change across permutations.
-    splits = make_cv_splits(y, groups=groups, n_folds=n_folds, random_state=random_state)
-    adj = _adjacency(neighbor_idx)
-
-    if verbose:
-        print(f"observed searchlight (grouped {n_folds}-fold by sentence)...")
-    observed = searchlight_accuracy(X, y, neighbor_idx, make_clf, splits)
-
-    if verbose:
-        print(f"running {n_permutations} sentence-level label permutations (n_jobs={n_jobs})...")
-
     def _one(seed):
-        rng = np.random.default_rng(seed)
+        rng = np.random.default_rng(int(seed))
         yp = _permute_group_labels(y, groups, rng)
         return searchlight_accuracy(X, yp, neighbor_idx, make_clf, splits)
 
-    null = np.asarray(Parallel(n_jobs=n_jobs)(
-        delayed(_one)(random_state + 1 + i) for i in range(n_permutations)))  # (P, n_ch)
+    return np.asarray(Parallel(n_jobs=n_jobs)(delayed(_one)(s) for s in seeds))
 
-    # per-electrode uncorrected p, and a per-electrode cluster-forming threshold from the null
-    p_elec = (1 + (null >= observed).sum(axis=0)) / (1 + n_permutations)
+
+def cluster_test(observed, null, neighbor_idx, cluster_alpha=0.05):
+    """Spatial cluster test from an observed (n_ch,) map and a null (P, n_ch) array.
+
+    Works for a null of any size, so you can accumulate permutations across runs and call
+    this on the combined null. Returns the same dict as `permutation_cluster_searchlight`.
+    """
+    observed = np.asarray(observed)
+    null = np.asarray(null)
+    adj = _adjacency(neighbor_idx)
+    n_perm = null.shape[0]
+
+    p_elec = (1 + (null >= observed).sum(axis=0)) / (1 + n_perm)
     thr = np.quantile(null, 1 - cluster_alpha, axis=0)
 
     stat = observed - CHANCE_3CLASS
     obs_clusters = _components(observed > thr, adj)
     obs_mass = [float(stat[c].sum()) for c in obs_clusters]
 
-    # null distribution of the largest cluster mass
-    null_max = np.zeros(n_permutations)
-    for i in range(n_permutations):
+    null_max = np.zeros(n_perm)
+    for i in range(n_perm):
         comps = _components(null[i] > thr, adj)
         nstat = null[i] - CHANCE_3CLASS
         null_max[i] = max((nstat[c].sum() for c in comps), default=0.0)
 
-    cluster_p = [(1 + (null_max >= m).sum()) / (1 + n_permutations) for m in obs_mass]
+    cluster_p = [(1 + (null_max >= m).sum()) / (1 + n_perm) for m in obs_mass]
 
     sig_mask = np.zeros(len(observed), dtype=bool)
     for c, p in zip(obs_clusters, cluster_p):
         if p < cluster_alpha:
             sig_mask[c] = True
 
-    if verbose:
-        n_sig = int((np.array(cluster_p) < cluster_alpha).sum()) if cluster_p else 0
-        print(f"\nchance={CHANCE_3CLASS:.3f} | best electrode acc={observed.max():.3f}")
-        print(f"{len(obs_clusters)} candidate cluster(s); {n_sig} significant at "
-              f"cluster_alpha={cluster_alpha}")
-        for c, p, m in sorted(zip(obs_clusters, cluster_p, obs_mass), key=lambda t: t[1]):
-            print(f"  cluster size={len(c):2d}  mass={m:.3f}  p={p:.3f}" + ("  *" if p < cluster_alpha else ""))
-
     return dict(accuracy=observed, p_per_electrode=p_elec, threshold=thr,
                 clusters=obs_clusters, cluster_pvalues=cluster_p, sig_mask=sig_mask,
-                null_max_mass=null_max, n_permutations=n_permutations)
+                null_max_mass=null_max, n_permutations=n_perm)
+
+
+def summarize_clusters(result, cluster_alpha=0.05):
+    """Print chance, best electrode, and each candidate cluster's size/mass/p-value."""
+    cp = result["cluster_pvalues"]
+    n_sig = int((np.array(cp) < cluster_alpha).sum()) if cp else 0
+    print(f"\nchance={CHANCE_3CLASS:.3f} | best electrode acc={result['accuracy'].max():.3f} "
+          f"| {result['n_permutations']} permutations")
+    print(f"{len(result['clusters'])} candidate cluster(s); {n_sig} significant at "
+          f"cluster_alpha={cluster_alpha}")
+    for c, p, m in sorted(zip(result["clusters"], cp,
+                              [float((result['accuracy'][c] - CHANCE_3CLASS).sum()) for c in result['clusters']]),
+                          key=lambda t: t[1]):
+        print(f"  cluster size={len(c):2d}  mass={m:.3f}  p={p:.3f}" + ("  *" if p < cluster_alpha else ""))
+
+
+# ----------------------------------------------------------------------------- one-shot entry point
+def permutation_cluster_searchlight(X, y, neighbor_idx, groups, n_permutations=200,
+                                    n_folds=5, cluster_alpha=0.05, random_state=42,
+                                    make_clf=None, n_jobs=-1, verbose=True):
+    """Run the whole test in one go (observed + all permutations + cluster correction).
+
+    For chunked/resumable runs, use `make_cv_splits` + `searchlight_accuracy` + `permute_null`
+    + `cluster_test` directly (see scripts/run_local.py).
+    """
+    if make_clf is None:
+        make_clf = default_clf
+    groups = np.asarray(groups)
+
+    splits = make_cv_splits(y, groups=groups, n_folds=n_folds, random_state=random_state)
+    if verbose:
+        print(f"observed searchlight (grouped {n_folds}-fold by sentence)...")
+    observed = searchlight_accuracy(X, y, neighbor_idx, make_clf, splits)
+
+    if verbose:
+        print(f"running {n_permutations} sentence-level label permutations (n_jobs={n_jobs})...")
+    seeds = [random_state + 1 + i for i in range(n_permutations)]
+    null = permute_null(X, y, neighbor_idx, groups, splits, make_clf, seeds, n_jobs=n_jobs)
+
+    result = cluster_test(observed, null, neighbor_idx, cluster_alpha=cluster_alpha)
+    if verbose:
+        summarize_clusters(result, cluster_alpha)
+    return result
 
 
 def plot_significance_topomap(result, info, title="cluster-corrected significance"):
