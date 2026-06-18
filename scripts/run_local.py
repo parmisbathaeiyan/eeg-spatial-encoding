@@ -43,6 +43,8 @@ def main():
     ap.add_argument("--n-folds", type=int, default=5)
     ap.add_argument("--n-jobs", type=int, default=-1, help="parallel workers (-1 = all cores; lower = cooler)")
     ap.add_argument("--random-state", type=int, default=42)
+    ap.add_argument("--scoring", choices=["accuracy", "balanced"], default="accuracy",
+                    help="balanced = balanced accuracy (chance 1/3, immune to class imbalance)")
     ap.add_argument("--out-dir", default="local_results", help="where results are saved")
     ap.add_argument("--no-plot", action="store_true", help="skip the matplotlib windows")
     args = ap.parse_args()
@@ -60,10 +62,11 @@ def main():
 
     # --- classical searchlight (always; saved by default) ---
     grp = groups if args.grouped else None
-    tag = "grouped" if args.grouped else "ungrouped"
+    tag = f"{'grouped' if args.grouped else 'ungrouped'}_{args.scoring}"
     print(f"classical searchlight ({tag}) ...")
     results = searchlight.run_searchlight(X_band, y, neighbor_idx, ch_names,
-                                          n_folds=args.n_folds, random_state=args.random_state, groups=grp)
+                                          n_folds=args.n_folds, random_state=args.random_state,
+                                          groups=grp, scoring=args.scoring)
     searchlight.report_searchlight(results)
     csv = os.path.join(args.out_dir, f"searchlight_{tag}.csv")
     results.to_csv(csv)
@@ -76,9 +79,10 @@ def main():
 
         splits = searchlight.make_cv_splits(y, groups=groups, n_folds=args.n_folds,
                                             random_state=args.random_state)
-        observed = searchlight.searchlight_accuracy(X_band, y, neighbor_idx, stats.default_clf, splits)
+        observed = searchlight.searchlight_accuracy(X_band, y, neighbor_idx, stats.default_clf,
+                                                    splits, scoring=args.scoring)
 
-        null_path = os.path.join(args.out_dir, "perm_null.npz")
+        null_path = os.path.join(args.out_dir, f"perm_null_{args.scoring}.npz")
         if os.path.exists(null_path):
             null = np.load(null_path)["null"]
             n_done = null.shape[0]
@@ -90,7 +94,7 @@ def main():
         seeds = [args.random_state + 1 + (n_done + i) for i in range(args.n_perm)]
         print(f"adding {args.n_perm} permutations (total -> {n_done + args.n_perm}), n_jobs={args.n_jobs} ...")
         new = stats.permute_null(X_band, y, neighbor_idx, groups, splits, stats.default_clf,
-                                 seeds, n_jobs=args.n_jobs)
+                                 seeds, n_jobs=args.n_jobs, scoring=args.scoring)
         null = np.vstack([null, new]) if null.size else new
 
         np.savez(null_path, observed=observed, null=null,
@@ -102,7 +106,7 @@ def main():
 
         # per-electrode significance table
         import pandas as pd
-        sig_csv = os.path.join(args.out_dir, "perm_significance.csv")
+        sig_csv = os.path.join(args.out_dir, f"perm_significance_{args.scoring}.csv")
         pd.DataFrame({"accuracy": result["accuracy"],
                       "p_value": result["p_per_electrode"],
                       "significant": result["sig_mask"]}, index=ch_names).to_csv(sig_csv)

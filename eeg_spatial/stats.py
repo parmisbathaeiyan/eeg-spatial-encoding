@@ -70,19 +70,19 @@ def default_clf():
 
 
 # ----------------------------------------------------------------------------- building blocks
-def permute_null(X, y, neighbor_idx, groups, splits, make_clf, seeds, n_jobs=-1):
-    """Searchlight accuracy maps under sentence-level label permutation.
+def permute_null(X, y, neighbor_idx, groups, splits, make_clf, seeds, n_jobs=-1, scoring="accuracy"):
+    """Searchlight score maps under sentence-level label permutation.
 
     One map per integer in `seeds` (the seed makes each permutation reproducible). Returns
     an array of shape (len(seeds), n_channels). Use distinct seeds across chunks to keep
-    accumulated permutations independent.
+    accumulated permutations independent. `scoring` must match the observed map's scoring.
     """
     groups = np.asarray(groups)
 
     def _one(seed):
         rng = np.random.default_rng(int(seed))
         yp = _permute_group_labels(y, groups, rng)
-        return searchlight_accuracy(X, yp, neighbor_idx, make_clf, splits)
+        return searchlight_accuracy(X, yp, neighbor_idx, make_clf, splits, scoring=scoring)
 
     return np.asarray(Parallel(n_jobs=n_jobs)(delayed(_one)(s) for s in seeds))
 
@@ -140,9 +140,10 @@ def summarize_clusters(result, cluster_alpha=0.05):
 # ----------------------------------------------------------------------------- one-shot entry point
 def permutation_cluster_searchlight(X, y, neighbor_idx, groups, n_permutations=200,
                                     n_folds=5, cluster_alpha=0.05, random_state=42,
-                                    make_clf=None, n_jobs=-1, verbose=True):
+                                    make_clf=None, n_jobs=-1, scoring="accuracy", verbose=True):
     """Run the whole test in one go (observed + all permutations + cluster correction).
 
+    `scoring` is 'accuracy' (default) or 'balanced' (balanced accuracy, chance = 1/3).
     For chunked/resumable runs, use `make_cv_splits` + `searchlight_accuracy` + `permute_null`
     + `cluster_test` directly (see scripts/run_local.py).
     """
@@ -152,13 +153,13 @@ def permutation_cluster_searchlight(X, y, neighbor_idx, groups, n_permutations=2
 
     splits = make_cv_splits(y, groups=groups, n_folds=n_folds, random_state=random_state)
     if verbose:
-        print(f"observed searchlight (grouped {n_folds}-fold by sentence)...")
-    observed = searchlight_accuracy(X, y, neighbor_idx, make_clf, splits)
+        print(f"observed searchlight (grouped {n_folds}-fold by sentence, scoring={scoring})...")
+    observed = searchlight_accuracy(X, y, neighbor_idx, make_clf, splits, scoring=scoring)
 
     if verbose:
         print(f"running {n_permutations} sentence-level label permutations (n_jobs={n_jobs})...")
     seeds = [random_state + 1 + i for i in range(n_permutations)]
-    null = permute_null(X, y, neighbor_idx, groups, splits, make_clf, seeds, n_jobs=n_jobs)
+    null = permute_null(X, y, neighbor_idx, groups, splits, make_clf, seeds, n_jobs=n_jobs, scoring=scoring)
 
     result = cluster_test(observed, null, neighbor_idx, cluster_alpha=cluster_alpha)
     if verbose:
