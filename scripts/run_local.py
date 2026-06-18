@@ -29,6 +29,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from eeg_spatial import montage, searchlight, plotting, stats
 
+CLF_MAP = {"lda": "LDA", "logreg": "LogReg", "svm": "SVM_RBF", "rf": "RandomForest", "mlp": "MLP"}
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -45,6 +47,10 @@ def main():
     ap.add_argument("--random-state", type=int, default=42)
     ap.add_argument("--scoring", choices=["accuracy", "balanced"], default="accuracy",
                     help="balanced = balanced accuracy (chance 1/3, immune to class imbalance)")
+    ap.add_argument("--clf", choices=list(CLF_MAP), default="lda",
+                    help="classifier for the permutation test (default lda; svm/rf/mlp are slow)")
+    ap.add_argument("--skip-classical", action="store_true",
+                    help="skip the 5-model classical searchlight (e.g. on permutation-only reruns)")
     ap.add_argument("--out-dir", default="local_results", help="where results are saved")
     ap.add_argument("--no-plot", action="store_true", help="skip the matplotlib windows")
     args = ap.parse_args()
@@ -60,29 +66,33 @@ def main():
     info = montage.make_info(ch_names, mont)
     assert X_band.shape[1] == len(ch_names), "channel-count mismatch between features and montage"
 
-    # --- classical searchlight (always; saved by default) ---
-    grp = groups if args.grouped else None
-    tag = f"{'grouped' if args.grouped else 'ungrouped'}_{args.scoring}"
-    print(f"classical searchlight ({tag}) ...")
-    results = searchlight.run_searchlight(X_band, y, neighbor_idx, ch_names,
-                                          n_folds=args.n_folds, random_state=args.random_state,
-                                          groups=grp, scoring=args.scoring)
-    searchlight.report_searchlight(results)
-    csv = os.path.join(args.out_dir, f"searchlight_{tag}.csv")
-    results.to_csv(csv)
-    print("saved ->", csv)
+    # --- classical searchlight (all 5 models; saved by default) ---
+    results = None
+    if not args.skip_classical:
+        grp = groups if args.grouped else None
+        tag = f"{'grouped' if args.grouped else 'ungrouped'}_{args.scoring}"
+        print(f"classical searchlight ({tag}) ...")
+        results = searchlight.run_searchlight(X_band, y, neighbor_idx, ch_names,
+                                              n_folds=args.n_folds, random_state=args.random_state,
+                                              groups=grp, scoring=args.scoring)
+        searchlight.report_searchlight(results)
+        csv = os.path.join(args.out_dir, f"searchlight_{tag}.csv")
+        results.to_csv(csv)
+        print("saved ->", csv)
 
     # --- cluster permutation test (resumable, accumulates a null) ---
     if args.permutation:
         if groups is None:
             sys.exit("permutation test needs `groups` in the features file")
 
+        make_clf = searchlight.default_classifiers(args.random_state)[CLF_MAP[args.clf]]
+        print(f"permutation test: clf={args.clf}, scoring={args.scoring}")
         splits = searchlight.make_cv_splits(y, groups=groups, n_folds=args.n_folds,
                                             random_state=args.random_state)
-        observed = searchlight.searchlight_accuracy(X_band, y, neighbor_idx, stats.default_clf,
+        observed = searchlight.searchlight_accuracy(X_band, y, neighbor_idx, make_clf,
                                                     splits, scoring=args.scoring)
 
-        null_path = os.path.join(args.out_dir, f"perm_null_{args.scoring}.npz")
+        null_path = os.path.join(args.out_dir, f"perm_null_{args.scoring}_{args.clf}.npz")
         if os.path.exists(null_path):
             null = np.load(null_path)["null"]
             n_done = null.shape[0]
@@ -93,7 +103,7 @@ def main():
 
         seeds = [args.random_state + 1 + (n_done + i) for i in range(args.n_perm)]
         print(f"adding {args.n_perm} permutations (total -> {n_done + args.n_perm}), n_jobs={args.n_jobs} ...")
-        new = stats.permute_null(X_band, y, neighbor_idx, groups, splits, stats.default_clf,
+        new = stats.permute_null(X_band, y, neighbor_idx, groups, splits, make_clf,
                                  seeds, n_jobs=args.n_jobs, scoring=args.scoring)
         null = np.vstack([null, new]) if null.size else new
 
@@ -106,16 +116,16 @@ def main():
 
         # per-electrode significance table
         import pandas as pd
-        sig_csv = os.path.join(args.out_dir, f"perm_significance_{args.scoring}.csv")
+        sig_csv = os.path.join(args.out_dir, f"perm_significance_{args.scoring}_{args.clf}.csv")
         pd.DataFrame({"accuracy": result["accuracy"],
                       "p_value": result["p_per_electrode"],
                       "significant": result["sig_mask"]}, index=ch_names).to_csv(sig_csv)
         print("saved ->", sig_csv)
 
         if not args.no_plot:
-            stats.plot_significance_topomap(result, info)
+            stats.plot_significance_topomap(result, info, title=f"{args.clf} | {args.scoring}")
 
-    if not args.no_plot:
+    if results is not None and not args.no_plot:
         plotting.plot_accuracy_topomaps(results, info, args.k)
 
 
