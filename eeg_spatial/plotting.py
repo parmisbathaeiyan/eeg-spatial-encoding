@@ -7,7 +7,8 @@ import mne
 CHANCE_3CLASS = 1.0 / 3.0
 
 
-def plot_accuracy_topomaps(results_df, info, k_neighbors, title_suffix="", contours=4):
+def plot_accuracy_topomaps(results_df, info, k_neighbors, title_suffix="", contours=4,
+                           save_path=None, show=True):
     """One topomap per column of results_df (mean CV accuracy per electrode).
 
     The diverging colormap is centered on chance: white == chance, red = above, blue =
@@ -48,4 +49,9 @@ def plot_accuracy_topomaps(results_df, info, k_neighbors, title_suffix="", conto
         f"3-class sentiment decoding accuracy across electrode neighborhoods "
         f"(k={k_neighbors}){title_suffix}", fontsize=13,
     )
-    plt.show()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)

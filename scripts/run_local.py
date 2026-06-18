@@ -122,11 +122,15 @@ def main():
                       "significant": result["sig_mask"]}, index=ch_names).to_csv(sig_csv)
         print("saved ->", sig_csv)
 
-        if not args.no_plot:
-            stats.plot_significance_topomap(result, info, title=f"{args.clf} | {args.scoring}")
+        sig_png = os.path.join(args.out_dir, f"significance_{args.scoring}_{args.clf}.png")
+        stats.plot_significance_topomap(result, info, title=f"{args.clf} | {args.scoring}",
+                                        save_path=sig_png, show=not args.no_plot)
+        print("saved ->", sig_png)
 
-    if results is not None and not args.no_plot:
-        plotting.plot_accuracy_topomaps(results, info, args.k)
+    if results is not None:
+        topo_png = os.path.join(args.out_dir, f"topomap_{tag}.png")
+        plotting.plot_accuracy_topomaps(results, info, args.k, save_path=topo_png, show=not args.no_plot)
+        print("saved ->", topo_png)
 
 
 if __name__ == "__main__":

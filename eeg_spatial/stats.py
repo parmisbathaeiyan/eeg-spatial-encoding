@@ -167,7 +167,8 @@ def permutation_cluster_searchlight(X, y, neighbor_idx, groups, n_permutations=2
     return result
 
 
-def plot_significance_topomap(result, info, title="cluster-corrected significance"):
+def plot_significance_topomap(result, info, title="cluster-corrected significance",
+                              save_path=None, show=True):
     """Topomap of accuracy with cluster-significant electrodes ringed (white = chance)."""
     acc, mask = result["accuracy"], result["sig_mask"]
     vmin = min(acc.min(), CHANCE_3CLASS - 1e-3)
@@ -184,4 +185,9 @@ def plot_significance_topomap(result, info, title="cluster-corrected significanc
     cbar.set_label(f"CV accuracy  (white = chance = {CHANCE_3CLASS:.3f})")
     n_sig_clusters = int((np.array(result["cluster_pvalues"]) < 0.05).sum()) if result["cluster_pvalues"] else 0
     ax.set_title(f"{title}\n{int(mask.sum())} sig. electrodes in {n_sig_clusters} cluster(s)")
-    plt.show()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
