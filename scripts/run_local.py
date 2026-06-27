@@ -36,6 +36,9 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--features", required=True, help="npz with X_band, y, groups")
     ap.add_argument("--montage", default="zuco_montage.npz", help="montage npz (default: repo root)")
+    ap.add_argument("--montage-rotate", type=float, default=90,
+                    help="degrees to rotate the montage about Z for topomaps (ZuCo=90; "
+                         "TeCo likely differs). Does not affect the searchlight numbers.")
     ap.add_argument("--k", type=int, default=4, help="k nearest-neighbor electrodes")
     ap.add_argument("--grouped", action="store_true",
                     help="leakage-free StratifiedGroupKFold by sentence (uses groups)")
@@ -61,7 +64,7 @@ def main():
     X_band, y = d["X_band"], d["y"]
     groups = d["groups"] if "groups" in d.files else None
 
-    ch_names, ch_pos, mont = montage.load_montage(args.montage)
+    ch_names, ch_pos, mont = montage.load_montage(args.montage, rotate_deg=args.montage_rotate)
     neighbor_idx = montage.build_neighbor_graph(ch_pos, args.k)
     info = montage.make_info(ch_names, mont)
     assert X_band.shape[1] == len(ch_names), "channel-count mismatch between features and montage"

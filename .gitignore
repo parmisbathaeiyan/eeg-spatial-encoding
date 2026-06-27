@@ -21,8 +21,9 @@ fix_sentiment_labels.py
 spatial_accuracy_results*.csv
 *.png
 
-# Local run outputs (scripts/run_local.py)
+# Local run outputs (scripts/run_local.py) + manually collected results
 local_results/
+results/
 
 # Large / exploratory notebooks kept locally, not part of the pipeline
 Experiment-ZuCo&TeCo.ipynb
