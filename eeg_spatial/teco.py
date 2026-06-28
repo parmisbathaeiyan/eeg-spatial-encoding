@@ -14,6 +14,7 @@ unchanged.
 """
 import glob
 import os
+import pickle
 import re
 import warnings
 
@@ -34,9 +35,16 @@ def _h5_str(f, ref):
     return "".join(chr(c) for c in np.asarray(f[ref]).ravel())
 
 
-def find_teco_mat_files(task1_root):
-    """Sorted list of per-subject task1.mat files under task1_with_total/<subject>/task1.mat."""
+def find_teco_files(task1_root):
+    """Per-subject TeCo files under task1_with_total/<subject>/. Prefers .pickle, else .mat."""
+    pkls = sorted(glob.glob(os.path.join(task1_root, "*", "task1.pickle")))
+    if pkls:
+        return pkls
     return sorted(glob.glob(os.path.join(task1_root, "*", "task1.mat")))
+
+
+# backwards-compatible alias
+find_teco_mat_files = find_teco_files
 
 
 def load_teco_label_map(labels_csv):
@@ -58,12 +66,45 @@ def _word_band_vector(f, word_group, wi, feature_prefix, bands, n_channels):
     return vec
 
 
-def load_teco_subject(mat_path, feature_prefix="TRT", bands=DEFAULT_BANDS, n_channels=126):
+def load_teco_subject(path, feature_prefix="TRT", bands=DEFAULT_BANDS, n_channels=126):
     """Yield (sentence_id, persian_text, band_features [n_channels x n_bands]) per sentence.
 
-    band_features is the mean over the sentence's words (unfixated words contribute NaN and
-    are ignored by the nanmean). Sentences with no usable word data are skipped.
+    Dispatches on file type: `.pickle`/`.pkl` (a dict of trials) or `.mat` (v7.3/HDF5).
+    band_features is the mean over the sentence's words (unfixated words give a stub -> NaN,
+    ignored by the nanmean). Sentences with no usable word data are skipped.
     """
+    ext = os.path.splitext(path)[1].lower()
+    if ext in (".pickle", ".pkl"):
+        yield from _load_subject_pickle(path, feature_prefix, bands, n_channels)
+    else:
+        yield from _load_subject_mat(path, feature_prefix, bands, n_channels)
+
+
+def _load_subject_pickle(pkl_path, feature_prefix, bands, n_channels):
+    with open(pkl_path, "rb") as fh:
+        subj = pickle.load(fh)
+    for t in subj:
+        trial = subj[t]
+        words = trial.get("word") or {}
+        if not words:
+            continue
+        vecs = []
+        for w in words.values():
+            vec = np.full((n_channels, len(bands)), np.nan, dtype=np.float32)
+            for b, suf in enumerate(bands):
+                v = np.asarray(w.get(f"{feature_prefix}_{suf}"))
+                if v.size == n_channels:           # (2,) stub = unfixated -> leave NaN
+                    vec[:, b] = v.ravel()
+            vecs.append(vec)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", category=RuntimeWarning)
+            feat = np.nanmean(np.stack(vecs), axis=0)
+        if np.isnan(feat).all():
+            continue
+        yield int(trial["sentenceId"]), str(trial["persian_sentence"]), feat
+
+
+def _load_subject_mat(mat_path, feature_prefix, bands, n_channels):
     with h5py.File(mat_path, "r") as f:
         sd = f["main_structure"]
         n_trials = sd["word"].shape[0]
